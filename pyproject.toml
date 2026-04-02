@@ -1,0 +1,69 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name        = "sr-pipeline"
+version     = "0.1.0"
+description = "AI-powered systematic review and meta-analysis automation toolkit"
+readme      = "README.md"
+license     = { text = "MIT" }
+requires-python = ">=3.10"
+
+authors = [
+    { name = "Tuyen Tran", email = "tuyen.tran97@gmail.com" }
+]
+keywords = [
+    "systematic-review", "meta-analysis", "medical-research",
+    "AI", "clinical-research", "PRISMA", "evidence-synthesis"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "pdfminer.six>=20221105",
+    "pypdf>=3.0.0",
+]
+docx = [
+    "python-docx>=1.1.0",
+]
+full = [
+    "pdfminer.six>=20221105",
+    "pypdf>=3.0.0",
+    "python-docx>=1.1.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+srma = "srma.screening:main"
+
+[project.urls]
+Homepage   = "https://github.com/tuyentran-md/sr-pipeline"
+Repository = "https://github.com/tuyentran-md/sr-pipeline"
+Issues     = "https://github.com/tuyentran-md/sr-pipeline/issues"
+Blog       = "https://aiforacademic.world"
+
+[tool.pytest.ini_options]
+testpaths  = ["tests"]
+addopts    = "-v --tb=short"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["srma*"]

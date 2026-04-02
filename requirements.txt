@@ -1,0 +1,14 @@
+# Core (required)
+requests>=2.31.0
+pandas>=2.0.0
+
+# Optional: PDF extraction
+# pdfminer.six>=20221105
+# pypdf>=3.0.0
+
+# Optional: Word document handling
+# python-docx>=1.1.0
+
+# Dev
+pytest>=7.0
+pytest-cov
