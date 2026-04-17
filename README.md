@@ -1,6 +1,6 @@
 # sr-pipeline
 
-> AI-powered systematic review and meta-analysis automation toolkit for clinical researchers.
+> Safe, hybrid AI pipeline for systematic reviews and meta-analyses. Automation with human-in-the-loop.
 
 [![Tests](https://github.com/tuyentran-md/sr-pipeline/actions/workflows/tests.yml/badge.svg)](https://github.com/tuyentran-md/sr-pipeline/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -10,7 +10,7 @@
 
 Doing a systematic review means spending days on deduplication and title/abstract screening before you even touch the science. This toolkit automates those steps using Claude while keeping you in control of the decisions that matter.
 
-Built from real SR/MA work in pediatric surgery. Tested on 500+ records across multiple projects.
+Built from real SR/MA work in pediatric surgery. Tested on 500+ records across multiple projects. This is not "end-to-end automation." This is **acceleration with human-in-the-loop**, explicitly designed to prevent AI hallucinations from corrupting your data extraction and meta-analysis.
 
 ## What it does
 
@@ -174,7 +174,7 @@ pytest
 
 ## Roadmap
 
-- [ ] Full-text PDF extraction (`srma.extraction`)
+- [ ] Full-text PDF highlighting (AI locates data, human extracts) (`srma.extraction`)
 - [ ] R analysis script generator (`srma.r_analysis`)
 - [ ] Reference verification via CrossRef API (`srma.references`)
 - [ ] PROSPERO protocol outline generator (`srma.outline`)
@@ -182,9 +182,9 @@ pytest
 
 ## Background
 
-This repo grew out of a real systematic review on outcomes after anorectal malformation repair ([E1_ARM project](https://aiforacademic.world)). The deduplication and screening logic has been validated against manual screening on ~500 records.
+This repo grew out of a real systematic review on outcomes after anorectal malformation repair ([E1_ARM project](https://aiforacademic.world)). The deduplication and screening logic has been validated against manual screening on ~500 records. Our core belief: AI should map and screen, but humans must extract and interpret.
 
-More on the methodology and how AI fits into evidence synthesis: [aiforacademic.world](https://aiforacademic.world)
+Read the full methodology on how to use AI for systematic reviews safely: [How to Use AI for Systematic Reviews Without Compromising Rigor](https://aiforacademic.world/blog/how-to-use-ai-for-systematic-reviews-without-compromising-rigor)
 
 ## License
 
