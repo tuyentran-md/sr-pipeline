@@ -4,7 +4,7 @@ examples/quickstart.py — sr-pipeline quickstart
 Prerequisites
 -------------
 1. Set your API key:
-   export ANTHROPIC_API_KEY=sk-ant-...
+   export GOOGLE_AI_API_KEY=...        (or put it in ./gemini.env)
 
 2. Create a project directory with exported CSVs:
    my_review/
@@ -20,7 +20,7 @@ What it does
 ------------
 - Merges all CSVs
 - Removes duplicates (DOI-exact + title-fuzzy)
-- Screens title/abstract via Claude against your criteria
+- Screens title/abstract via Google Gemini against your criteria
 - Outputs:
     artifacts/screening_results.csv  ← All records with decision/confidence/reason
     artifacts/prisma_report.md       ← PRISMA 2020 flow summary
@@ -28,8 +28,8 @@ What it does
     artifacts/merged.csv             ← Raw merged records
 """
 
-import os
 from srma.screening import run_pipeline
+from srma.utils import get_api_key
 
 # ── Configure your review ────────────────────────────────────────────────────
 
@@ -53,16 +53,17 @@ EXCLUSION_CRITERIA = [
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("Error: ANTHROPIC_API_KEY not set.")
-        print("Run: export ANTHROPIC_API_KEY=sk-ant-...")
+    try:
+        get_api_key()
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
         exit(1)
 
     results = run_pipeline(
         project_dir = PROJECT_DIR,
         inclusion   = INCLUSION_CRITERIA,
         exclusion   = EXCLUSION_CRITERIA,
-        model       = "screening",     # Uses Claude Haiku (fast + cheap)
+        model       = "screening",     # Uses Gemini Flash (fast + cheap)
     )
 
     print("\n--- Summary ---")
@@ -73,11 +74,11 @@ if __name__ == "__main__":
 
     # If there are uncertain records, retry with a stronger model
     if results.get("uncertain", 0) > 0:
-        print("\nRetrying uncertain records with Sonnet...")
+        print("\nRetrying uncertain records...")
         run_pipeline(
             project_dir     = PROJECT_DIR,
             inclusion       = INCLUSION_CRITERIA,
             exclusion       = EXCLUSION_CRITERIA,
-            model           = "extraction",    # Uses Claude Sonnet
+            model           = "extraction",    # Uses Gemini Flash
             retry_uncertain = True,
         )

@@ -8,7 +8,7 @@
 
 ---
 
-Doing a systematic review means spending days on deduplication and title/abstract screening before you even touch the science. This toolkit automates those steps using Claude while keeping you in control of the decisions that matter.
+Doing a systematic review means spending days on deduplication and title/abstract screening before you even touch the science. This toolkit automates those steps using Google Gemini while keeping you in control of the decisions that matter.
 
 Built from real SR/MA work in pediatric surgery. Tested on 500+ records across multiple projects. This is not "end-to-end automation." This is **acceleration with human-in-the-loop**, explicitly designed to prevent AI hallucinations from corrupting your data extraction and meta-analysis.
 
@@ -30,13 +30,13 @@ Database exports (PubMed / Scopus / Embase)
      dedup.csv                → post-deduplication records
 ```
 
-The screener uses Claude Haiku by default (fast, cheap — ~$0.03 per 100 records). Uncertain records can be re-run with Sonnet for a second opinion.
+The screener uses Google Gemini Flash by default (fast, cheap). Uncertain records can be re-run for a second opinion.
 
 ## Quickstart
 
 ```bash
 pip install sr-pipeline
-export ANTHROPIC_API_KEY=sk-ant-...
+export GOOGLE_AI_API_KEY=...    # or put GOOGLE_AI_API_KEY=... in ./gemini.env
 ```
 
 ```python
@@ -91,12 +91,12 @@ my_review/
 The screener marks records as `uncertain` when the abstract is too short to judge or the criteria fit is ambiguous. Review these manually or retry with a stronger model:
 
 ```python
-# Retry uncertain records with Sonnet
+# Retry uncertain records
 run_pipeline(
     project_dir     = "./my_review",
     inclusion       = INCLUSION_CRITERIA,
     exclusion       = EXCLUSION_CRITERIA,
-    model           = "extraction",   # → Claude Sonnet
+    model           = "extraction",   # → Gemini Flash
     retry_uncertain = True,
 )
 ```
@@ -154,10 +154,10 @@ normalize_title("Effect of Surgery: A Review")  # → "effect of surgery a revie
 
 | Role key | Default model | Best for |
 |---|---|---|
-| `"screening"` | Claude Haiku | High-volume title/abstract screening |
-| `"extraction"` | Claude Sonnet | Data extraction, uncertain records |
-| `"drafting"` | Claude Sonnet | Results section drafting |
-| `"polishing"` | Claude Sonnet | Manuscript polish |
+| `"screening"` | Gemini Flash | High-volume title/abstract screening |
+| `"extraction"` | Gemini Flash | Data extraction, uncertain records |
+| `"drafting"` | Gemini Flash | Results section drafting |
+| `"polishing"` | Gemini Flash | Manuscript polish |
 
 Override: `screen_records(df, ..., model="extraction")`
 

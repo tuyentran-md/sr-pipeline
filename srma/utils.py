@@ -2,7 +2,7 @@
 srma/utils.py — Standalone utilities (no external framework dependencies)
 
 Covers:
-  - Anthropic API call (reads ANTHROPIC_API_KEY from env)
+  - Google Gemini API call (reads GOOGLE_AI_API_KEY from env or credentials file)
   - Text normalization helpers
   - JSON parsing helpers
   - Project directory helpers
@@ -19,24 +19,51 @@ from typing import Optional
 
 import requests
 
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-# Default model mapping
+# Optional .env fallback. Env var GOOGLE_AI_API_KEY always wins.
+# Override the file location with GEMINI_ENV_FILE; otherwise ./gemini.env or ./.env.
+
+# Default model mapping. Cheap flash for everything by design.
 ROLE_TO_MODEL: dict[str, str] = {
-    "screening":   "claude-haiku-4-5-20251001",
-    "extraction":  "claude-sonnet-4-6-20250514",
-    "drafting":    "claude-sonnet-4-6-20250514",
-    "polishing":   "claude-sonnet-4-6-20250514",
+    "screening":   "gemini-3-flash-preview",
+    "extraction":  "gemini-3-flash-preview",
+    "drafting":    "gemini-3-flash-preview",
+    "polishing":   "gemini-3-flash-preview",
 }
 
 
+def _load_env_file(path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE .env file. Returns {} if absent."""
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
 def get_api_key() -> str:
-    """Resolve Anthropic API key from environment."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    """Resolve Google Gemini API key: env var first, then optional .env file."""
+    key = os.environ.get("GOOGLE_AI_API_KEY", "").strip()
+    if not key:
+        candidates = []
+        override = os.environ.get("GEMINI_ENV_FILE", "").strip()
+        if override:
+            candidates.append(Path(override))
+        candidates += [Path.cwd() / "gemini.env", Path.cwd() / ".env"]
+        for p in candidates:
+            key = _load_env_file(p).get("GOOGLE_AI_API_KEY", "").strip()
+            if key:
+                break
     if not key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. "
-            "Export it: export ANTHROPIC_API_KEY=sk-ant-..."
+            "GOOGLE_AI_API_KEY not set. Export it, or put it in a "
+            "gemini.env / .env file, or set GEMINI_ENV_FILE=/path/to/file"
         )
     return key
 
@@ -51,17 +78,17 @@ def call_llm(
     model:         Optional[str] = None,
 ) -> str:
     """
-    Call Anthropic API and return the text response.
+    Call the Google Gemini API and return the text response.
 
     Parameters
     ----------
     prompt        : User message
-    role          : Determines model (screening→haiku, extraction→sonnet, etc.)
+    role          : Determines model via ROLE_TO_MODEL (default flash)
     system_prompt : Optional system-level instruction
     temperature   : 0.0 for deterministic screening, higher for drafting
     max_tokens    : Max response tokens
     timeout       : Request timeout in seconds
-    model         : Override model string (e.g. "claude-sonnet-4-6-20250514")
+    model         : Override model string (e.g. "gemini-3-flash-preview")
 
     Returns
     -------
@@ -71,38 +98,44 @@ def call_llm(
     ------
     RuntimeError : If API key missing or request fails
     """
-    _model   = model or ROLE_TO_MODEL.get(role, "claude-haiku-4-5-20251001")
-    api_key  = get_api_key()
+    _model  = model or ROLE_TO_MODEL.get(role, "gemini-3-flash-preview")
+    api_key = get_api_key()
 
-    headers = {
-        "x-api-key":         api_key,
-        "content-type":      "application/json",
-        "anthropic-version": "2023-06-01",
-    }
+    url = f"{GEMINI_API_BASE}/{_model}:generateContent?key={api_key}"
     payload: dict = {
-        "model":       _model,
-        "messages":    [{"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "max_tokens":  max_tokens,
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature":     temperature,
+            "maxOutputTokens": max_tokens,
+            # Gemini 3 is a thinking model; "low" keeps screening cheap and
+            # prevents thinking tokens from starving the output budget.
+            "thinkingConfig":  {"thinkingLevel": "low"},
+        },
     }
     if system_prompt:
-        payload["system"] = system_prompt
+        payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
     resp = requests.post(
-        ANTHROPIC_API_URL,
-        headers=headers,
+        url,
+        headers={"content-type": "application/json"},
         json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
-    data  = resp.json()
-    text  = data["content"][0]["text"]
-    usage = data.get("usage", {})
+    data = resp.json()
+
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        text  = "".join(p.get("text", "") for p in parts)
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(f"Unexpected Gemini response shape: {data}") from exc
+
+    usage = data.get("usageMetadata", {})
     if usage:
         print(
             f"  [API] {role} → {_model} "
-            f"| in:{usage.get('input_tokens',0)} "
-            f"out:{usage.get('output_tokens',0)}"
+            f"| in:{usage.get('promptTokenCount',0)} "
+            f"out:{usage.get('candidatesTokenCount',0)}"
         )
     return text
 

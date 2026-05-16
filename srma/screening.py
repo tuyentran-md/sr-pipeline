@@ -98,7 +98,7 @@ def merge_csvs(raw_dir: str | Path) -> pd.DataFrame:
     for fname in files:
         fpath = raw_dir / fname
         try:
-            df   = pd.read_csv(fpath, low_memory=False)
+            df   = pd.read_csv(fpath, low_memory=False, encoding="utf-8-sig")
             cols = [c for c in _USE_COLS if c in df.columns]
             df   = df[cols].copy()
             df["source_file"] = fname
@@ -311,7 +311,7 @@ def screen_records(
 
         try:
             raw    = call_llm(prompt, role=model, system_prompt=_SCREENING_SYSTEM,
-                              temperature=0.0, max_tokens=1500)
+                              temperature=0.0, max_tokens=4000)
             parsed = safe_parse_json(raw)
 
             if not parsed:
@@ -410,7 +410,7 @@ def run_pipeline(
     project_dir     : Path to project folder
     inclusion       : List of inclusion criterion strings
     exclusion       : List of exclusion criterion strings
-    model           : LLM role for screening (default: 'screening' → Haiku)
+    model           : LLM role for screening (default: 'screening' → Gemini Flash)
     skip_dedup      : Skip deduplication (useful if data already deduped)
     skip_screen     : Only merge + dedup, no LLM call
     retry_uncertain : Re-screen only existing 'uncertain' records
@@ -511,7 +511,7 @@ def _parse_criteria_file(path: str) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SR-Pipeline: title/abstract screening via Claude"
+        description="SR-Pipeline: title/abstract screening via Google Gemini"
     )
     parser.add_argument("--project-dir",      required=True,
                         help="Path to project directory (must contain raw/ folder with CSVs)")
@@ -521,7 +521,7 @@ def main():
                         help="Path to exclusion criteria text file (one criterion per line)")
     parser.add_argument("--model",             default="screening",
                         choices=list(__import__("srma.utils", fromlist=["ROLE_TO_MODEL"]).ROLE_TO_MODEL),
-                        help="LLM role (default: screening → Haiku)")
+                        help="LLM role (default: screening → Gemini Flash)")
     parser.add_argument("--skip-dedup",        action="store_true")
     parser.add_argument("--skip-screen",       action="store_true")
     parser.add_argument("--retry-uncertain",   action="store_true")
