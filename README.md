@@ -20,13 +20,14 @@ Database exports (PubMed / Scopus / Embase)
         ▼
   1. merge_csvs()          → combine multiple exports into one DataFrame
   2. deduplicate()         → DOI-exact + title-fuzzy match (SequenceMatcher ≥ 0.90)
-  3. screen_records()      → batch LLM screening against your PICO criteria
-  4. generate_prisma()     → PRISMA 2020-compliant flow report
+  3. screen_records()      → provisional LLM screening against your PICO criteria
+  4. human adjudication    → explicit include/exclude confirmation
+  5. extract_records()     → provisional full-text codes with evidence quotes
         │
         ▼
    artifacts/
-     screening_results.csv    → all records with decision / confidence / reason
-     prisma_report.md         → flow numbers ready to paste into your paper
+     screening_results.csv    → AI suggestion + human/final decision columns
+     prisma_report.md         → confirmed counts; pending rows stay pending
      dedup.csv                → post-deduplication records
 ```
 
@@ -35,8 +36,8 @@ The screener uses Google Gemini Flash by default (fast, cheap). Uncertain record
 ## Quickstart
 
 ```bash
-pip install sr-pipeline
-export GOOGLE_AI_API_KEY=...    # or put GOOGLE_AI_API_KEY=... in ./gemini.env
+pip install "git+https://github.com/tuyentran-md/sr-pipeline.git"
+export GEMINI_API_KEY=...  # GOOGLE_AI_API_KEY also works; gemini.env/.env supported
 ```
 
 ```python
@@ -58,7 +59,7 @@ results = run_pipeline(
     ],
 )
 
-# results = {"included": 42, "excluded": 187, "uncertain": 8, "output_dir": "..."}
+# Before human adjudication, AI suggestions remain pending in final_decision.
 ```
 
 Or via CLI:
@@ -86,9 +87,34 @@ my_review/
 
 **Export format**: Zotero CSV export is recommended (works for PubMed, Scopus, Embase). Direct PubMed CSV also works.
 
-## Handling uncertain records
+## Fetching legal open-access PDFs
 
-The screener marks records as `uncertain` when the abstract is too short to judge or the criteria fit is ambiguous. Review these manually or retry with a stronger model:
+The downloader checks PMC Open Access first, then Unpaywall, validates PDF bytes,
+and writes unresolved papers to `missing.tsv` for manual retrieval:
+
+```bash
+python -m srma.download \
+  --input papers.tsv \
+  --outdir pdfs/ \
+  --email researcher@example.com
+```
+
+`papers.tsv` uses the columns `pmid`, `doi`, `title`, and `pmc`. A DOI or PMC ID
+is sufficient when a PMID is unavailable.
+
+## Required human adjudication
+
+`decision`, `confidence`, and `reason` are AI suggestions. Every row starts with
+`final_decision="pending"` and `needs_review=True`. Enter `include`, `exclude`,
+or `uncertain` in `human_decision`, then apply the explicit human decisions and
+refresh the PRISMA report without an API call:
+
+```bash
+srma --project-dir ./my_review --finalize-human
+```
+
+AI-uncertain records can be re-run with the stronger extraction role before the
+human decision:
 
 ```python
 # Retry uncertain records
@@ -126,10 +152,34 @@ Screen a DataFrame against eligibility criteria via LLM.
 ```python
 from srma.screening import screen_records
 df = screen_records(df, inclusion=["..."], exclusion=["..."])
-# df now has: decision, confidence, reason columns
+# AI: decision, confidence, reason
+# Human gate: human_decision, final_decision, needs_review
 ```
 
 Decision values: `"include"` | `"exclude"` | `"uncertain"`
+
+### `extract_records(df, schema, text_col="full_text")`
+
+Generate provisional structured codes from full text. Codes outside the schema,
+missing evidence, and evidence quotes absent from the source are rejected or
+flagged. Every candidate still has `review_status="pending"` and an empty
+`human_code` until a person verifies it.
+
+```python
+from srma.extraction import (
+    load_schema_from_yaml,
+    extract_records,
+    apply_human_extraction,
+)
+
+schema = load_schema_from_yaml("coding_schema.yaml")
+coded = extract_records(df, schema, out_path="extraction_results.csv")
+# After reviewers fill each <dimension>_human_code column:
+coded = apply_human_extraction(coded, schema)
+```
+
+From a checkout, install YAML support with `pip install -e ".[yaml]"`, or use a
+Python dict and the core install.
 
 ### `generate_prisma_report(project_name, n_raw, n_after_dedup, df)`
 
@@ -154,10 +204,10 @@ normalize_title("Effect of Surgery: A Review")  # → "effect of surgery a revie
 
 | Role key | Default model | Best for |
 |---|---|---|
-| `"screening"` | Gemini Flash | High-volume title/abstract screening |
-| `"extraction"` | Gemini Flash | Data extraction, uncertain records |
-| `"drafting"` | Gemini Flash | Results section drafting |
-| `"polishing"` | Gemini Flash | Manuscript polish |
+| `"screening"` | Gemini 3.5 Flash (stable) | High-volume title/abstract screening |
+| `"extraction"` | Gemini 3.1 Pro (preview) | Data extraction, uncertain records |
+| `"drafting"` | Gemini 3.1 Pro (preview) | Results section drafting |
+| `"polishing"` | Gemini 3.1 Pro (preview) | Manuscript polish |
 
 Override: `screen_records(df, ..., model="extraction")`
 
@@ -170,11 +220,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-68 tests, no API calls required. Tests use mocked LLM responses.
+110 tests, no API calls required. Tests use mocked LLM and download responses.
 
 ## Roadmap
 
-- [ ] Full-text PDF highlighting (AI locates data, human extracts) (`srma.extraction`)
+- [x] Structured full-text extraction candidates with mandatory human confirmation (`srma.extraction`)
 - [ ] R analysis script generator (`srma.r_analysis`)
 - [ ] Reference verification via CrossRef API (`srma.references`)
 - [ ] PROSPERO protocol outline generator (`srma.outline`)

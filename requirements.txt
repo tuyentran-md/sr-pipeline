@@ -9,6 +9,9 @@ pandas>=2.0.0
 # Optional: Word document handling
 # python-docx>=1.1.0
 
+# Optional: YAML extraction schemas
+# PyYAML>=6.0
+
 # Dev
 pytest>=7.0
 pytest-cov

@@ -13,6 +13,8 @@ from srma.screening import (
     deduplicate,
     generate_prisma_report,
     screen_records,
+    apply_human_decisions,
+    finalize_human_screening,
     _build_screening_prompt,
     _norm_decision,
     _norm_confidence,
@@ -96,6 +98,24 @@ class TestDeduplicate:
         clean, _, after = deduplicate(df)
         assert after == 2
 
+    def test_blank_titles_with_distinct_dois_are_not_dropped(self):
+        df = pd.DataFrame({"Title": ["", ""], "DOI": ["10.1/a", "10.1/b"]})
+        _, _, after = deduplicate(df)
+        assert after == 2
+
+    def test_similar_titles_with_conflicting_dois_are_not_dropped(self):
+        df = pd.DataFrame({
+            "Title": ["Same trial report", "Same trial report"],
+            "DOI": ["10.1/a", "10.1/b"],
+        })
+        _, _, after = deduplicate(df)
+        assert after == 2
+
+    def test_rejects_invalid_threshold(self):
+        df = pd.DataFrame({"Title": ["A"], "DOI": [""]})
+        with pytest.raises(ValueError):
+            deduplicate(df, title_threshold=1.1)
+
     def test_returns_correct_types(self):
         df = pd.DataFrame({"Title": ["A"], "DOI": ["10.1/a"]})
         clean, before, after = deduplicate(df)
@@ -167,6 +187,10 @@ class TestNormHelpers:
 
     def test_norm_confidence_none(self):
         assert _norm_confidence(None) == pytest.approx(0.0)
+
+    def test_norm_confidence_non_finite(self):
+        assert _norm_confidence(float("nan")) == 0.0
+        assert _norm_confidence(float("inf")) == 0.0
 
 
 # ─── _build_screening_prompt ─────────────────────────────────────────────────
@@ -296,9 +320,61 @@ class TestScreenRecordsMocked:
             result = screen_records(df, ["Pediatric"], ["Animals"])
         assert (result["decision"] == "uncertain").all()
 
+    def test_mixed_malformed_batch_does_not_partially_apply(self):
+        response = '[{"id":"0","decision":"include"}, "bad item"]'
+        with patch("srma.screening.call_llm", return_value=response):
+            result = screen_records(self._make_df(), ["Pediatric"], ["Animals"])
+        assert (result["decision"] == "uncertain").all()
+
     def test_preserves_original_columns(self):
         df = self._make_df()
         with patch("srma.screening.call_llm", return_value=self._mock_response()):
             result = screen_records(df, ["Pediatric"], ["Animals"])
         assert "Title" in result.columns
         assert "DOI" in result.columns
+
+    def test_ai_decisions_remain_pending_human_review(self):
+        with patch("srma.screening.call_llm", return_value=self._mock_response()):
+            result = screen_records(self._make_df(), ["Pediatric"], ["Animals"])
+        assert result["needs_review"].all()
+        assert (result["final_decision"] == "pending").all()
+
+    def test_duplicate_input_indexes_do_not_misroute_results(self):
+        df = self._make_df()
+        df.index = [7, 7]
+        with patch("srma.screening.call_llm", return_value=self._mock_response()):
+            result = screen_records(df, ["Pediatric"], ["Animals"])
+        assert result["decision"].tolist() == ["include", "exclude"]
+
+
+class TestHumanAdjudication:
+    def test_only_explicit_human_decisions_become_final(self):
+        df = pd.DataFrame({
+            "decision": ["exclude", "include", "uncertain"],
+            "human_decision": ["include", "", "exclude"],
+        })
+        out = apply_human_decisions(df)
+        assert out["final_decision"].tolist() == ["include", "pending", "exclude"]
+        assert out["needs_review"].tolist() == [False, True, False]
+
+    def test_invalid_human_decision_is_rejected(self):
+        with pytest.raises(ValueError):
+            apply_human_decisions(pd.DataFrame({"human_decision": ["maybe"]}))
+
+    def test_finalize_persists_decisions_and_refreshes_prisma(self, tmp_path):
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        pd.DataFrame({
+            "decision": ["exclude", "include"],
+            "human_decision": ["include", ""],
+        }).to_csv(artifacts / "screening_results.csv", index=False)
+        pd.DataFrame({"Title": ["a", "b"]}).to_csv(
+            artifacts / "merged.csv", index=False
+        )
+
+        result = finalize_human_screening(tmp_path)
+
+        saved = pd.read_csv(artifacts / "screening_results.csv")
+        assert saved["final_decision"].tolist() == ["include", "pending"]
+        assert result["included"] == 1 and result["uncertain"] == 1
+        assert "Pending/uncertain: 1" in (artifacts / "prisma_report.md").read_text()

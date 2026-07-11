@@ -22,7 +22,7 @@ What it does
 - Removes duplicates (DOI-exact + title-fuzzy)
 - Screens title/abstract via Google Gemini against your criteria
 - Outputs:
-    artifacts/screening_results.csv  ← All records with decision/confidence/reason
+    artifacts/screening_results.csv  ← AI suggestions + human/final decisions
     artifacts/prisma_report.md       ← PRISMA 2020 flow summary
     artifacts/dedup.csv              ← Post-dedup records
     artifacts/merged.csv             ← Raw merged records
@@ -67,18 +67,8 @@ if __name__ == "__main__":
     )
 
     print("\n--- Summary ---")
-    print(f"Included  : {results['included']}")
-    print(f"Excluded  : {results['excluded']}")
-    print(f"Uncertain : {results['uncertain']}")
+    print(f"Human-confirmed included : {results['included']}")
+    print(f"Human-confirmed excluded : {results['excluded']}")
+    print(f"Pending human review     : {results['uncertain']}")
     print(f"\nOutput: {results['output_dir']}")
-
-    # If there are uncertain records, retry with a stronger model
-    if results.get("uncertain", 0) > 0:
-        print("\nRetrying uncertain records...")
-        run_pipeline(
-            project_dir     = PROJECT_DIR,
-            inclusion       = INCLUSION_CRITERIA,
-            exclusion       = EXCLUSION_CRITERIA,
-            model           = "extraction",    # Uses Gemini Flash
-            retry_uncertain = True,
-        )
+    print("Review decision/confidence/reason, then fill human_decision in the CSV.")
