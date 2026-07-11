@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import math
 import argparse
 from pathlib import Path
 from difflib import SequenceMatcher
@@ -156,13 +157,19 @@ def deduplicate(
     >>> after
     2
     """
+    if not 0.0 <= title_threshold <= 1.0:
+        raise ValueError("title_threshold must be between 0.0 and 1.0")
+    missing = {"DOI", "Title"} - set(df.columns)
+    if missing:
+        raise KeyError(f"deduplicate requires columns: {', '.join(sorted(missing))}")
+
     df = df.copy()
     df["_doi_norm"]   = df["DOI"].apply(normalize_doi)
     df["_title_norm"] = df["Title"].apply(normalize_title)
     df["_duplicate"]  = False
 
     seen_dois:   dict[str, int] = {}
-    seen_titles: list[tuple[str, int]] = []
+    seen_titles: list[tuple[str, str, int]] = []
 
     for i, row in df.iterrows():
         doi   = row["_doi_norm"]
@@ -175,14 +182,21 @@ def deduplicate(
             seen_dois[doi] = i
 
         is_dup = False
-        for prev_title, _ in seen_titles:
-            if SequenceMatcher(None, title, prev_title).ratio() >= title_threshold:
-                df.at[i, "_duplicate"] = True
-                is_dup = True
-                break
+        # Empty titles compare as 100% similar. Never use fuzzy matching unless
+        # both records have a real title, otherwise unrelated citations vanish.
+        if title:
+            for prev_title, prev_doi, _ in seen_titles:
+                # Conflicting non-empty DOIs are stronger evidence than fuzzy
+                # title similarity; retain both for human review.
+                if doi and prev_doi and doi != prev_doi:
+                    continue
+                if SequenceMatcher(None, title, prev_title).ratio() >= title_threshold:
+                    df.at[i, "_duplicate"] = True
+                    is_dup = True
+                    break
 
-        if not is_dup:
-            seen_titles.append((title, i))
+        if title and not is_dup:
+            seen_titles.append((title, doi, i))
 
     n_before = len(df)
     df_clean = df[~df["_duplicate"]].drop(
@@ -258,9 +272,33 @@ def _norm_decision(value: str) -> str:
 def _norm_confidence(value) -> float:
     try:
         c = float(value)
+        if not math.isfinite(c):
+            return 0.0
         return max(0.0, min(1.0, c))
     except (TypeError, ValueError):
         return 0.0
+
+
+def apply_human_decisions(
+    df: pd.DataFrame,
+    human_col: str = "human_decision",
+) -> pd.DataFrame:
+    """Apply explicit human include/exclude decisions to provisional AI output."""
+    if human_col not in df.columns:
+        raise KeyError(f"human decision column '{human_col}' not found")
+
+    out = df.copy()
+    human = out[human_col].fillna("").astype(str).str.strip().str.lower()
+    allowed = {"", "include", "exclude", "uncertain"}
+    invalid = sorted(set(human) - allowed)
+    if invalid:
+        raise ValueError(f"invalid human decision(s): {', '.join(invalid)}")
+
+    confirmed = human.isin({"include", "exclude"})
+    out[human_col] = human
+    out["final_decision"] = human.where(confirmed, "pending")
+    out["needs_review"] = ~confirmed
+    return out
 
 
 def screen_records(
@@ -291,14 +329,17 @@ def screen_records(
     Re-run with screen_records(...) on the uncertain subset to retry.
     """
     df = df.copy()
-    if "_row_id" not in df.columns:
-        df["_row_id"] = df.index.astype(str)
+    # Use fresh positional IDs so duplicate/custom DataFrame indexes cannot
+    # redirect a model response to the wrong citation.
+    df["_row_id"] = [str(i) for i in range(len(df))]
 
     df["decision"]   = "uncertain"
     df["confidence"] = 0.0
     df["reason"]     = ""
+    if "human_decision" not in df.columns:
+        df["human_decision"] = ""
 
-    id_to_idx = {str(rid): idx for idx, rid in df["_row_id"].items()}
+    id_to_pos = {str(i): i for i in range(len(df))}
     total     = len(df)
     failed    = []
 
@@ -314,23 +355,31 @@ def screen_records(
                               temperature=0.0, max_tokens=4000)
             parsed = safe_parse_json(raw)
 
-            if not parsed:
+            if not parsed or not isinstance(parsed, list) or not all(
+                isinstance(item, dict) for item in parsed
+            ):
                 print(f"  Warning: batch {start+1}-{end}: JSON parse failed")
                 failed.append((start, end))
                 continue
 
-            matched = 0
+            updates: dict[int, tuple[str, float, str]] = {}
             for item in parsed:
                 row_id = str(item.get("id", "")).strip()
-                idx    = id_to_idx.get(row_id)
-                if idx is None:
+                pos = id_to_pos.get(row_id)
+                if pos is None or pos in updates:
                     continue
-                df.at[idx, "decision"]   = _norm_decision(item.get("decision", "uncertain"))
-                df.at[idx, "confidence"] = _norm_confidence(item.get("confidence", 0.0))
-                df.at[idx, "reason"]     = str(item.get("reason", "")).strip()
-                matched += 1
+                updates[pos] = (
+                    _norm_decision(item.get("decision", "uncertain")),
+                    _norm_confidence(item.get("confidence", 0.0)),
+                    str(item.get("reason", "")).strip(),
+                )
 
-            print(f"  Batch {start+1}-{end}: {matched}/{len(batch)} matched")
+            for pos, (decision, confidence, reason) in updates.items():
+                df.iloc[pos, df.columns.get_loc("decision")] = decision
+                df.iloc[pos, df.columns.get_loc("confidence")] = confidence
+                df.iloc[pos, df.columns.get_loc("reason")] = reason
+
+            print(f"  Batch {start+1}-{end}: {len(updates)}/{len(batch)} matched")
 
         except Exception as exc:
             print(f"  Error batch {start+1}-{end}: {exc}")
@@ -340,7 +389,9 @@ def screen_records(
         n_failed = sum(e - s for s, e in failed)
         print(f"\n  {len(failed)} batches failed ({n_failed} records → 'uncertain')")
 
-    return df
+    # AI output is always provisional. Only an explicit human include/exclude
+    # value can populate final_decision and clear needs_review.
+    return apply_human_decisions(df)
 
 
 # ─── STEP 4 — PRISMA REPORT ───────────────────────────────────────────────────
@@ -358,9 +409,16 @@ def generate_prisma_report(
     -------
     (report_text, n_included, n_excluded, n_uncertain)
     """
-    n_included  = int((screening_df["decision"] == "include").sum())
-    n_excluded  = int((screening_df["decision"] == "exclude").sum())
-    n_uncertain = int((screening_df["decision"] == "uncertain").sum())
+    decision_col = "final_decision" if "final_decision" in screening_df else "decision"
+    decisions = screening_df[decision_col].fillna("").astype(str).str.lower()
+    n_included  = int((decisions == "include").sum())
+    n_excluded  = int((decisions == "exclude").sum())
+    n_uncertain = int((~decisions.isin({"include", "exclude"})).sum())
+    screening_label = (
+        "AI-screened (provisional; human adjudication required)"
+        if decision_col == "final_decision"
+        else "Screened (title + abstract)"
+    )
 
     report = f"""\
 # PRISMA Flow — {project_name}
@@ -370,19 +428,45 @@ def generate_prisma_report(
 
 ## Screening
 - After deduplication: {n_after_dedup}
-- Screened (title + abstract): {n_after_dedup}
+- {screening_label}: {n_after_dedup}
   - Included:  {n_included}
   - Excluded:  {n_excluded}
-  - Uncertain: {n_uncertain} (manual review needed)
+  - Pending/uncertain: {n_uncertain} (manual review needed)
 
 ## Next Step
-- Manual review of {n_uncertain} uncertain record(s)
+- Manual review of {n_uncertain} pending/uncertain record(s)
 - Full-text assessment of {n_included} included record(s)
 
 ---
 *Generated by sr-pipeline (https://github.com/tuyentran-md/sr-pipeline)*
 """
     return report, n_included, n_excluded, n_uncertain
+
+
+def finalize_human_screening(project_dir: str | Path) -> dict:
+    """Validate human_decision values, persist final decisions, and refresh PRISMA."""
+    project_dir = Path(project_dir)
+    artifacts_dir = project_artifacts_dir(project_dir)
+    results_path = artifacts_dir / "screening_results.csv"
+    if not results_path.exists():
+        raise FileNotFoundError(f"screening results not found: {results_path}")
+
+    df = apply_human_decisions(pd.read_csv(results_path).fillna(""))
+    df.to_csv(results_path, index=False)
+    merged_path = artifacts_dir / "merged.csv"
+    n_raw = len(pd.read_csv(merged_path)) if merged_path.exists() else len(df)
+    report, n_inc, n_exc, n_pending = generate_prisma_report(
+        project_dir.name, n_raw, len(df), df
+    )
+    prisma_path = artifacts_dir / "prisma_report.md"
+    prisma_path.write_text(report, encoding="utf-8")
+    return {
+        "included": n_inc,
+        "excluded": n_exc,
+        "uncertain": n_pending,
+        "output_dir": str(artifacts_dir),
+        "files": [str(results_path), str(prisma_path)],
+    }
 
 
 # ─── HIGH-LEVEL API ───────────────────────────────────────────────────────────
@@ -430,7 +514,8 @@ def run_pipeline(
         if not results_path.exists():
             raise FileNotFoundError("screening_results.csv not found. Run normally first.")
         df = pd.read_csv(results_path).fillna("")
-        mask = df["decision"] == "uncertain"
+        human = df.get("human_decision", pd.Series("", index=df.index)).fillna("")
+        mask = (df["decision"] == "uncertain") & human.astype(str).str.strip().eq("")
         n    = mask.sum()
         if n == 0:
             print("No uncertain records. Nothing to retry.")
@@ -468,6 +553,8 @@ def run_pipeline(
         print("\n[3/3] Screening skipped.")
         for col in ["decision", "confidence", "reason"]:
             df[col] = ""
+        df["human_decision"] = ""
+        df = apply_human_decisions(df)
 
     if "_row_id" in df.columns:
         df = df.drop(columns=["_row_id"])
@@ -481,10 +568,10 @@ def run_pipeline(
 
     print(f"\n{'='*55}")
     print("DONE")
-    print(f"  Include  : {n_inc}")
-    print(f"  Exclude  : {n_exc}")
-    print(f"  Uncertain: {n_unc}")
-    if n_unc:
+    print(f"  Confirmed include : {n_inc}")
+    print(f"  Confirmed exclude : {n_exc}")
+    print(f"  Pending/uncertain : {n_unc}")
+    if n_unc and not skip_screen:
         print(f"\n  Tip: re-run with retry_uncertain=True to reprocess uncertain records")
     print(f"{'='*55}\n")
 
@@ -525,7 +612,13 @@ def main():
     parser.add_argument("--skip-dedup",        action="store_true")
     parser.add_argument("--skip-screen",       action="store_true")
     parser.add_argument("--retry-uncertain",   action="store_true")
+    parser.add_argument("--finalize-human",    action="store_true",
+                        help="Apply human_decision values and refresh PRISMA; no API call")
     args = parser.parse_args()
+
+    if args.finalize_human:
+        finalize_human_screening(args.project_dir)
+        return
 
     inclusion = _parse_criteria_file(args.inclusion) if args.inclusion else []
     exclusion = _parse_criteria_file(args.exclusion) if args.exclusion else []

@@ -6,6 +6,8 @@ No API calls — all tests are pure logic.
 
 import pytest
 from srma.utils import (
+    call_llm,
+    get_api_key,
     normalize_doi,
     normalize_title,
     safe_parse_json,
@@ -145,3 +147,31 @@ class TestEnsureDir:
         # Should not raise if directory already exists
         ensure_dir(tmp_path)
         assert tmp_path.is_dir()
+
+
+class TestGeminiClient:
+    def test_accepts_official_gemini_key_alias(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_AI_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "alias-key")
+        assert get_api_key() == "alias-key"
+
+    def test_api_key_is_sent_in_header_not_url(self, monkeypatch):
+        captured = {}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs["headers"]
+            return Response()
+
+        monkeypatch.setenv("GOOGLE_AI_API_KEY", "secret-key")
+        monkeypatch.setattr("srma.utils.requests.post", fake_post)
+        assert call_llm("hello") == "ok"
+        assert "secret-key" not in captured["url"]
+        assert captured["headers"]["x-goog-api-key"] == "secret-key"

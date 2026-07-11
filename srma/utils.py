@@ -24,12 +24,12 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 # Optional .env fallback. Env var GOOGLE_AI_API_KEY always wins.
 # Override the file location with GEMINI_ENV_FILE; otherwise ./gemini.env or ./.env.
 
-# Default model mapping. Cheap flash for everything by design.
+# Default model mapping: stable Flash for volume, stronger Pro for complex work.
 ROLE_TO_MODEL: dict[str, str] = {
-    "screening":   "gemini-3-flash-preview",
-    "extraction":  "gemini-3-flash-preview",
-    "drafting":    "gemini-3-flash-preview",
-    "polishing":   "gemini-3-flash-preview",
+    "screening":   "gemini-3.5-flash",
+    "extraction":  "gemini-3.1-pro-preview",
+    "drafting":    "gemini-3.1-pro-preview",
+    "polishing":   "gemini-3.1-pro-preview",
 }
 
 
@@ -43,13 +43,16 @@ def _load_env_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        out[k.strip()] = v.strip()
+        out[k.strip()] = v.strip().strip("'\"")
     return out
 
 
 def get_api_key() -> str:
     """Resolve Google Gemini API key: env var first, then optional .env file."""
-    key = os.environ.get("GOOGLE_AI_API_KEY", "").strip()
+    key = (
+        os.environ.get("GOOGLE_AI_API_KEY", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
     if not key:
         candidates = []
         override = os.environ.get("GEMINI_ENV_FILE", "").strip()
@@ -57,12 +60,16 @@ def get_api_key() -> str:
             candidates.append(Path(override))
         candidates += [Path.cwd() / "gemini.env", Path.cwd() / ".env"]
         for p in candidates:
-            key = _load_env_file(p).get("GOOGLE_AI_API_KEY", "").strip()
+            values = _load_env_file(p)
+            key = (
+                values.get("GOOGLE_AI_API_KEY", "").strip()
+                or values.get("GEMINI_API_KEY", "").strip()
+            )
             if key:
                 break
     if not key:
         raise RuntimeError(
-            "GOOGLE_AI_API_KEY not set. Export it, or put it in a "
+            "GOOGLE_AI_API_KEY / GEMINI_API_KEY not set. Export one, or put it in a "
             "gemini.env / .env file, or set GEMINI_ENV_FILE=/path/to/file"
         )
     return key
@@ -88,7 +95,7 @@ def call_llm(
     temperature   : 0.0 for deterministic screening, higher for drafting
     max_tokens    : Max response tokens
     timeout       : Request timeout in seconds
-    model         : Override model string (e.g. "gemini-3-flash-preview")
+    model         : Override model string (e.g. "gemini-3.5-flash")
 
     Returns
     -------
@@ -98,10 +105,10 @@ def call_llm(
     ------
     RuntimeError : If API key missing or request fails
     """
-    _model  = model or ROLE_TO_MODEL.get(role, "gemini-3-flash-preview")
+    _model  = model or ROLE_TO_MODEL.get(role, "gemini-3.5-flash")
     api_key = get_api_key()
 
-    url = f"{GEMINI_API_BASE}/{_model}:generateContent?key={api_key}"
+    url = f"{GEMINI_API_BASE}/{_model}:generateContent"
     payload: dict = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -117,7 +124,7 @@ def call_llm(
 
     resp = requests.post(
         url,
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", "x-goog-api-key": api_key},
         json=payload,
         timeout=timeout,
     )
